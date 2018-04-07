@@ -1,0 +1,114 @@
+#!/bin/sh 
+
+# Options most likely to be changed 
+# Control the amount of information displayed. 
+# 0 displays nothing 
+# 1 displays the DISTCC_HOSTS and MAKEOPTS that will be used 
+# 2 displays the above plus the detection process 
+VERBOSE_DISPLAY=1 
+RANDOM_HOSTS=1 
+DISTCC_NETWORKS=172.20.1.0/24 
+IGNORE_HOSTS=172.20.1.2 
+DEFAULT_PROCESSES=2 
+
+
+# Options unlikely to need changed 
+
+CAT=/bin/cat 
+GREP=/bin/grep 
+AWK=/bin/awk 
+PING=/bin/ping 
+NMAP=/usr/bin/nmap 
+DATE=/usr/bin/date 
+PORT=3632 
+
+if [ `echo ${FEATURES} | $GREP -q -e distcc ; echo $?` == 0 ] && [ `echo ${FEATURES} | $GREP -q -e -distcc ; echo $?` != 0 ] && [ -n "$EBUILD_PHASE" ] && [ $EBUILD_PHASE == "compile" ]; then 
+
+   if [ $RANDOM_HOSTS -ge 1 ] ; then 
+      DISTCC_HOSTS="" 
+      BUILD_PROCESSES="" 
+      for X in `$NMAP --randomize-hosts -n -sT -p $PORT $DISTCC_NETWORKS --open --exclude $IGNORE_HOSTS | $GREP Interesting| $AWK '{ print $4 }'| $AWK -F: '{ print $1 }'` ; do 
+         DISTCC_HOSTS="$DISTCC_HOSTS ${X}/${DEFAULT_PROCESSES}" 
+         BUILD_PROCESSES=$[$BUILD_PROCESSES+$DEFAULT_PROCESSES] 
+      done 
+      DISTCC_HOSTS="localhost/1 $DISTCC_HOSTS localhost/1" 
+      BUILD_PROCESSES=$[$BUILD_PROCESSES+2] 
+      COMMIT=1 
+   else 
+
+      if [ -f "/etc/distcc/hosts" ] ; then 
+         DISTCC_CLIENTS=`echo | $CAT /etc/distcc/hosts` 
+      fi 
+
+      DISTCC_HOSTS="" 
+
+      for CLIENT in $DISTCC_CLIENTS ; do 
+         HOST=`echo $CLIENT | $AWK -F/ '{ print $1 }'` 
+
+         if [ $VERBOSE_DISPLAY -ge 2 ] ; then 
+            echo -n "Checking ${CLIENT}..." 
+         fi 
+    
+         VALID=0 
+         PROCESSES=0 
+         if [ $HOST = "localhost" ] ; then 
+            VALID=1 
+         elif [ `$PING -c 1 -n -q  $HOST > /dev/null ; echo $?` = 0 ] ; then 
+            if [ -f $NMAP ] ; then 
+               if [ `$NMAP -n -sT -p $PORT $HOST | $GREP $PORT | $AWK '{ print $2 }'` = open ] ; then 
+                  VALID=1 
+               else 
+                  VALID=0 
+               fi 
+            else 
+               VALID=1 
+            fi 
+         fi 
+
+         if [ $VALID = 1 ] ; then 
+
+            if [ $VERBOSE_DISPLAY -ge 2 ] ; then 
+               echo -n " Verified.  Checking Processes..." 
+            fi 
+
+            COMMIT=1 
+
+            if [ ! -z "$DISTCC_HOSTS" ] ; then 
+               DISTCC_HOSTS="${DISTCC_HOSTS} ${CLIENT}" 
+            else 
+               DISTCC_HOSTS="${CLIENT}" 
+            fi 
+
+            PROCESSES=`echo $CLIENT | $AWK -F/ '{ print $2 }'` 
+
+            if [ -z "$PROCESSES" ] ; then 
+               if [ $HOST = "localhost" ] ; then 
+                  PROCESSES=2 
+               else 
+                  PROCESSES=4 
+               fi 
+            fi 
+
+            if [ $VERBOSE_DISPLAY -ge 2 ] ; then 
+               echo " $PROCESSES Processes." 
+            fi 
+
+            BUILD_PROCESSES=$[$BUILD_PROCESSES+$PROCESSES] 
+         else 
+            if [ $VERBOSE_DISPLAY -ge 2 ] ; then 
+               echo " Could not verify host, skipping..." 
+            fi 
+         fi 
+      done 
+   fi 
+
+
+   if [ ! -z "$COMMIT" ] ; then 
+      export MAKEOPTS+=" -j${BUILD_PROCESSES}" 
+      export DISTCC_HOSTS 
+   fi 
+
+   if [ $VERBOSE_DISPLAY -ge 1 ] ; then 
+      echo HOSTS: $DISTCC_HOSTS, MAKEOPTS: $MAKEOPTS 
+   fi 
+fi 
